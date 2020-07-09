@@ -229,7 +229,7 @@ def main_worker(gpu, ngpus_per_node, args, meter_queue = None):
 
     if args.distributed:
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
-        val_sampler = torch.utils.data.distributed.DistributedSampler(val_dataset)
+        val_sampler = torch.utils.data.distributed.DistributedSampler(val_dataset, shuffle=False)
     else:
         train_sampler = None
         val_sampler = None
@@ -239,7 +239,7 @@ def main_worker(gpu, ngpus_per_node, args, meter_queue = None):
         num_workers=args.workers, pin_memory=True, sampler=train_sampler)
 
     val_loader = torch.utils.data.DataLoader(
-        val_dataset, batch_size=args.batch_size, shuffle=(val_sampler is None),
+        val_dataset, batch_size=args.batch_size, shuffle=False,
         num_workers=args.workers, pin_memory=True, sampler=val_sampler)
 
     if args.evaluate:
@@ -249,7 +249,8 @@ def main_worker(gpu, ngpus_per_node, args, meter_queue = None):
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             train_sampler.set_epoch(epoch)
-            val_sampler.set_epoch(epoch)
+            # epoch is used as seed, no need to update in validation.
+            # val_sampler.set_epoch(epoch)
         adjust_learning_rate(optimizer, epoch, args)
 
         # train for one epoch
