@@ -101,20 +101,18 @@ def main():
 
     ngpus_per_node = torch.cuda.device_count()
     if args.multiprocessing_distributed:
-        ctx = mp.get_context('spawn')
-        meter_queue = ctx.JoinableQueue()
         # Since we have ngpus_per_node processes per node, the total world_size
         # needs to be adjusted accordingly
         args.world_size = ngpus_per_node * args.world_size
         # Use torch.multiprocessing.spawn to launch distributed processes: the
         # main_worker process function
-        mp.spawn(main_worker, nprocs=ngpus_per_node, args=(ngpus_per_node, args, meter_queue))
+        mp.spawn(main_worker, nprocs=ngpus_per_node, args=(ngpus_per_node, args))
     else:
         # Simply call main_worker function
         main_worker(args.gpu, ngpus_per_node, args)
 
 
-def main_worker(gpu, ngpus_per_node, args, meter_queue = None):
+def main_worker(gpu, ngpus_per_node, args):
     global best_acc1
     args.gpu = gpu
     args.ngpus_per_node = ngpus_per_node
@@ -257,7 +255,7 @@ def main_worker(gpu, ngpus_per_node, args, meter_queue = None):
         train(train_loader, model, criterion, optimizer, epoch, args)
 
         # evaluate on validation set
-        acc1 = validate(val_loader, model, criterion, args, meter_queue)
+        acc1 = validate(val_loader, model, criterion, args)
 
         # remember best acc@1 and save checkpoint
         is_best = acc1 > best_acc1
@@ -321,7 +319,7 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
             progress.display(i)
 
 
-def validate(val_loader, model, criterion, args, meter_queue = None):
+def validate(val_loader, model, criterion, args):
     batch_time = AverageMeter('Time', ':6.3f')
     losses = AverageMeter('Loss', ':.4e')
     top1 = AverageMeter('Acc@1', ':6.2f')
@@ -363,22 +361,13 @@ def validate(val_loader, model, criterion, args, meter_queue = None):
         print(' * Acc@1 {top1.avg:.3f} Acc@5 {top5.avg:.3f}'
               .format(top1=top1, top5=top5))
 
+    acc = top1.avg
     if args.multiprocessing_distributed:
-        if args.rank % args.ngpus_per_node == 0:
-            for i in range(args.ngpus_per_node - 1):
-                start_time = time.time()
-                # In fact the other three is not used here.
-                top1_peer, top5_peer, batch_time_peer, losses_peer = meter_queue.get()
-                top1.merge(top1_peer)
-                meter_queue.task_done()
-        else:
-            meter_queue.put((top1, top5, batch_time, losses))
-            # TODO: This cost about 2 seconds idle on each processor.
-            #       Without this may cause problem if
-            #       next round putting begins before ending of this round.
-            meter_queue.join()
+        metrics = torch.tensor([top1.avg]).to(args.gpu)
+        dist.all_reduce(metrics, dist.ReduceOp.SUM, async_op=True)
+        acc = metrics.item() / args.world_size    
     
-    return top1.avg
+    return acc
 
 
 def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
@@ -404,12 +393,6 @@ class AverageMeter(object):
         self.val = val
         self.sum += val * n
         self.count += n
-        self.avg = self.sum / self.count
-
-    def merge(self, peer):
-        self.val = peer.val
-        self.sum += peer.sum
-        self.count += peer.count
         self.avg = self.sum / self.count
 
     def __str__(self):
